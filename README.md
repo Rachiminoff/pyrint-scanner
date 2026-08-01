@@ -1,17 +1,33 @@
-# 📚 pyrint-scanner
+# pyrint-scanner
 
-A production-quality Python tool that scans EPUB files and determines which chapter each illustration belongs to.
+A production-ready Python utility for scanning EPUB files and automatically determining which chapter each illustration belongs to.
 
-## ✨ Features
+Designed for light novels, ebooks, and other illustrated EPUBs, **pyrint-scanner** analyzes an EPUB's structure, detects chapter boundaries, and maps every illustration to its corresponding chapter. It can also optionally extract illustrations and export the results in machine-readable formats.
 
-- 🔍 **Smart Chapter Detection** - Detects chapter titles from HTML content
-- 🖼️ **Illustration Mapping** - Maps illustrations to their respective chapters
-- 📊 **Multiple Output Formats** - JSON and CSV export
-- 💾 **Image Extraction** - Optional extraction of illustrations
-- 🎨 **Beautiful CLI** - Rich terminal interface with progress bars
-- 🚀 **Batch Processing** - Scan single files or entire folders
+## Features
 
-## 🚀 Quick Start
+- **Smart Chapter Detection**  
+  Detects chapter titles using EPUB navigation files and HTML content.
+
+- **Illustration Mapping**  
+  Automatically associates each illustration with its corresponding chapter.
+
+- **Multiple Export Formats**  
+  Export results as **JSON** or **CSV**.
+
+- **Optional Image Extraction**  
+  Extract illustrations directly from the EPUB archive.
+
+- **Rich Command-Line Interface**  
+  Clean terminal output with progress bars, tables, and status indicators.
+
+- **Batch Processing**  
+  Process a single EPUB or scan an entire directory.
+
+- **Fast & Lightweight**  
+  Built for efficient processing with minimal dependencies.
+
+## Quick Start
 
 ```bash
 # Clone the repository
@@ -21,5 +37,18 @@ cd pyrint-scanner
 # Install dependencies
 pip install -r requirements.txt
 
-# Run
+# Run the scanner
 python pyrint_scanner.py
+```
+
+## Use Cases
+
+- Organize illustrations by chapter
+- Build illustration galleries
+- Analyze EPUB structures
+- Prepare datasets for ebook tooling
+- Automate light novel processing pipelines
+
+## License
+
+This project is licensed under the MIT License.
