@@ -20,23 +20,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+import threading
 
 import ebooklib
 from bs4 import BeautifulSoup
 from ebooklib import epub
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
-from rich.prompt import Confirm, Prompt
-from rich.table import Table
-from rich.text import Text
 
 # PDF generation imports
 try:
@@ -111,34 +101,36 @@ class Chapter:
 class PDFGenerator:
     """Handles PDF catalog generation for illustrations."""
     
-    def __init__(self, console: Console):
-        self.console = console
+    def __init__(self, log_callback=None):
+        self.log_callback = log_callback
+        
+    def _log(self, message):
+        if self.log_callback:
+            self.log_callback(message)
         
     def _create_image_from_bytes(self, image_data: bytes, max_width: float = 400, max_height: float = 500) -> Optional[ReportLabImage]:
-        """Create a ReportLab Image object from bytes data."""
         try:
             img_io = BytesIO(image_data)
             img = ReportLabImage(img_io, width=max_width, height=max_height)
             img._restrictSize(max_width, max_height)
             return img
-        except Exception as e:
+        except:
             return None
     
     def generate_catalog(self, result: Dict, output_path: Path, book_title: str) -> bool:
-        """Generate a PDF catalog of illustrations with metadata."""
         if not PDF_SUPPORT:
-            self.console.print("[red]PDF support not available. Install reportlab.[/]")
+            self._log("PDF support not available. Install reportlab.")
             return False
         
         try:
             illustrations = result.get("illustrations", [])
             if not illustrations:
-                self.console.print("[yellow]No illustrations to include in PDF.[/]")
+                self._log("No illustrations to include in PDF.")
                 return False
             
             unique_illustrations = [i for i in illustrations if not i.get("is_duplicate", False)]
             if not unique_illustrations:
-                self.console.print("[yellow]No unique illustrations to include in PDF.[/]")
+                self._log("No unique illustrations to include in PDF.")
                 return False
             
             doc = SimpleDocTemplate(
@@ -271,17 +263,16 @@ class PDFGenerator:
                 story.append(PageBreak())
             
             doc.build(story)
-            self.console.print(f"[green]✓ PDF catalog generated: {output_path}[/]")
+            self._log(f"✓ PDF catalog generated: {output_path}")
             return True
             
         except Exception as e:
-            self.console.print(f"[red]Failed to generate PDF: {str(e)}[/]")
+            self._log(f"Failed to generate PDF: {str(e)}")
             import traceback
-            self.console.print(f"[dim]{traceback.format_exc()}[/]")
+            self._log(f"{traceback.format_exc()}")
             return False
     
     def generate_simple_catalog(self, result: Dict, output_path: Path, book_title: str) -> bool:
-        """Generate a simpler PDF catalog with one illustration per page."""
         if not PDF_SUPPORT:
             return False
         
@@ -365,32 +356,30 @@ class PDFGenerator:
                 story.append(PageBreak())
             
             doc.build(story)
-            self.console.print(f"[green]✓ Simple PDF catalog generated: {output_path}[/]")
+            self._log(f"✓ Simple PDF catalog generated: {output_path}")
             return True
             
         except Exception as e:
-            self.console.print(f"[red]Failed to generate simple PDF: {str(e)}[/]")
+            self._log(f"Failed to generate simple PDF: {str(e)}")
             import traceback
-            self.console.print(f"[dim]{traceback.format_exc()}[/]")
+            self._log(f"{traceback.format_exc()}")
             return False
 
 
 class TitleExtractor:
     """Handles intelligent title extraction from EPUB content."""
     
-    # Patterns that indicate this is NOT a title
     NON_TITLE_PATTERNS = [
-        r'^section\s*\d+',  # "Section 1"
-        r'^part\s*\d+',     # "Part 1"
-        r'^chapter\s*\d+',  # "Chapter 1" (without additional text)
-        r'^vol\.?\s*\d+',   # "Vol. 1"
-        r'^volume\s*\d+',   # "Volume 1"
-        r'^\d+\s*[-:]\s*$', # Just a number
-        r'^[-_=]{3,}$',     # Line of dashes/underscores
-        r'^\s*$',           # Empty
+        r'^section\s*\d+',
+        r'^part\s*\d+',
+        r'^chapter\s*\d+',
+        r'^vol\.?\s*\d+',
+        r'^volume\s*\d+',
+        r'^\d+\s*[-:]\s*$',
+        r'^[-_=]{3,}$',
+        r'^\s*$',
     ]
     
-    # Common title prefixes to strip
     TITLE_PREFIXES = [
         r'^(chapter|ch\.?|chap\.?)\s*\d+\s*[:.-]\s*',
         r'^(part|pt\.?)\s*\d+\s*[:.-]\s*',
@@ -399,14 +388,12 @@ class TitleExtractor:
         r'^第\d+[章话節]\s*',
     ]
     
-    # Decorative patterns that indicate chapter boundaries in light novels
     DECORATIVE_PATTERNS = [
         '☆☆☆', '***', '———', '〜〜〜', '◆◆◆', '✧✧✧', '✦✦✦',
         '❀❀❀', '✿✿✿', '🌸🌸🌸', '🌺🌺🌺', '🍀🍀🍀',
         '◎◎◎', '◉◉◉', '○●○', '♥♥♥', '♡♡♡',
     ]
     
-    # Chapter keywords for detection
     CHAPTER_KEYWORDS = [
         'chapter', 'prologue', 'epilogue', 'afterword', 'appendix',
         'interlude', 'side story', 'bonus', 'extra', 'introduction',
@@ -417,261 +404,173 @@ class TitleExtractor:
         self.debug = False
         
     def is_non_title(self, text: str) -> bool:
-        """Check if text is clearly NOT a title."""
         if not text:
             return True
-        
         text_lower = text.lower().strip()
-        
-        # Check against non-title patterns
         for pattern in self.NON_TITLE_PATTERNS:
             if re.search(pattern, text_lower):
                 return True
-        
-        # Check if it's just a number
         if re.match(r'^[\d]+$', text_lower):
             return True
-        
-        # Check if it's just a single word that's not a chapter keyword
         words = text_lower.split()
         if len(words) == 1:
             word = words[0]
-            # If it's a common word, probably not a title
             common_words = ['the', 'a', 'an', 'of', 'for', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'by']
             if word in common_words:
                 return True
-        
         return False
     
     def clean_title(self, text: str) -> str:
-        """Clean and normalize a title."""
         if not text:
             return text
-        
-        # Remove common prefixes
         for prefix in self.TITLE_PREFIXES:
             text = re.sub(prefix, '', text, flags=re.IGNORECASE)
-        
-        # Remove trailing separators
         text = re.sub(r'\s*[—\-–:]\s*$', '', text)
-        
-        # Remove extra whitespace
         text = ' '.join(text.split())
-        
         return text.strip()
     
     def extract_from_filename(self, filename: str) -> Optional[str]:
-        """Extract title from filename."""
         name = os.path.splitext(os.path.basename(filename))[0]
         name = name.replace('_', ' ').replace('-', ' ')
-        
-        # Remove common prefixes
         name = re.sub(r'^(ch|chapter|chap|section|sec|part|pt|vol|volume)\s*\d+\s*[-:]\s*', '', name, flags=re.IGNORECASE)
         name = re.sub(r'^\d+\s*[-:]\s*', '', name)
-        
-        # Clean up
         name = ' '.join(name.split())
-        
         if name and len(name) > 2 and not self.is_non_title(name):
             return name
-        
         return None
     
     def extract_from_title_tag(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from <title> tag."""
         title_tag = soup.find('title')
         if not title_tag:
             return None
-        
         text = title_tag.get_text(strip=True)
         if not text:
             return None
-        
-        # Remove common suffixes (like " | Novel | EPUB")
         text = re.sub(r'\s*[|—-]\s*.*$', '', text)
         text = re.sub(r'\s*[–—-]\s*.*$', '', text)
-        
-        # Remove prefixes
         for prefix in self.TITLE_PREFIXES:
             text = re.sub(prefix, '', text, flags=re.IGNORECASE)
-        
         text = ' '.join(text.split())
-        
         if text and not self.is_non_title(text):
             return self.clean_title(text)
-        
         return None
     
     def extract_from_headings(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from heading tags."""
         for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
             for heading in soup.find_all(tag):
                 text = heading.get_text(strip=True)
                 if not text:
                     continue
-                
                 if len(text) < 200 and not self.is_non_title(text):
-                    # Check if it contains chapter keywords
                     if any(keyword in text.lower() for keyword in self.CHAPTER_KEYWORDS):
                         return self.clean_title(text)
-                    
-                    # If it's a reasonable length and not non-title
                     if 3 < len(text) < 100:
                         return self.clean_title(text)
-        
         return None
     
     def extract_from_decorative_patterns(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from decorative patterns common in light novels."""
         for pattern in self.DECORATIVE_PATTERNS:
-            # Find elements containing the decorative pattern
             for elem in soup.find_all(string=re.compile(re.escape(pattern))):
-                # Check nearby elements for title text
                 parent = elem.parent
                 if parent:
-                    # Check next sibling
                     next_sib = parent.find_next_sibling()
                     if next_sib:
                         text = next_sib.get_text(strip=True)
                         if text and 3 < len(text) < 100 and not self.is_non_title(text):
                             return self.clean_title(text)
-                    
-                    # Check previous sibling
                     prev_sib = parent.find_previous_sibling()
                     if prev_sib:
                         text = prev_sib.get_text(strip=True)
                         if text and 3 < len(text) < 100 and not self.is_non_title(text):
                             return self.clean_title(text)
-                    
-                    # Check parent's next element
                     next_elem = parent.find_next()
                     if next_elem and next_elem.name in ['p', 'div']:
                         text = next_elem.get_text(strip=True)
                         if text and 3 < len(text) < 100 and not self.is_non_title(text):
                             return self.clean_title(text)
-        
         return None
     
     def extract_from_centered_text(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from centered paragraphs."""
-        # Look for paragraphs with center alignment
         for p in soup.find_all('p', style=re.compile(r'text-align:\s*center', re.I)):
             text = p.get_text(strip=True)
             if not text or len(text) > 100:
                 continue
-            
             if self.is_non_title(text):
                 continue
-            
-            # Check if it looks like a chapter title
             if any(keyword in text.lower() for keyword in self.CHAPTER_KEYWORDS):
                 return self.clean_title(text)
-            
-            # Check for chapter-like patterns
-            if (re.search(r'^第', text) or  # Japanese chapter marker
+            if (re.search(r'^第', text) or
                 re.search(r'^\d+\.?\s*[—\-]\s*', text) or
                 re.search(r'[A-Z][a-z]+\s+[A-Z][a-z]+', text)):
                 return self.clean_title(text)
-            
-            # If it's short and centered, likely a title
             if len(text) < 50:
                 return self.clean_title(text)
-        
         return None
     
     def extract_from_class_patterns(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from elements with title-related classes."""
         class_patterns = [
             'title', 'chapter-title', 'section-title', 'heading', 'header',
             'chap', 'ch', 'subtitle', 'book-title', 'main-title'
         ]
-        
         for elem in soup.find_all(['p', 'div', 'span']):
             classes = elem.get('class', [])
             if not classes:
                 continue
-            
-            # Check if any class matches
             for class_name in classes:
                 class_lower = class_name.lower()
                 if any(pattern in class_lower for pattern in class_patterns):
                     text = elem.get_text(strip=True)
                     if text and 3 < len(text) < 100 and not self.is_non_title(text):
                         return self.clean_title(text)
-        
         return None
     
     def extract_from_paragraph_keywords(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extract title from paragraphs containing chapter keywords."""
         for p in soup.find_all('p'):
             text = p.get_text(strip=True)
             if not text or len(text) > 100:
                 continue
-            
             text_lower = text.lower()
-            
-            # Check for chapter keywords at the start
             for keyword in self.CHAPTER_KEYWORDS:
                 if text_lower.startswith(keyword):
                     return self.clean_title(text)
-            
-            # Check for chapter keyword anywhere
             if any(keyword in text_lower for keyword in self.CHAPTER_KEYWORDS):
-                # Only if it's not too long and not non-title
                 if len(text) < 100 and not self.is_non_title(text):
                     return self.clean_title(text)
-        
         return None
     
     def extract_title(self, soup: BeautifulSoup, filename: str, toc_title: str = "") -> Optional[str]:
-        """Main method to extract title with multiple fallback strategies."""
-        # Priority 1: TOC title (most reliable)
         if toc_title and not self.is_non_title(toc_title):
             return self.clean_title(toc_title)
-        
-        # Priority 2: Title tag
         title = self.extract_from_title_tag(soup)
         if title:
             return title
-        
-        # Priority 3: Headings
         title = self.extract_from_headings(soup)
         if title:
             return title
-        
-        # Priority 4: Decorative patterns (common in light novels)
         title = self.extract_from_decorative_patterns(soup)
         if title:
             return title
-        
-        # Priority 5: Centered text
         title = self.extract_from_centered_text(soup)
         if title:
             return title
-        
-        # Priority 6: Class-based detection
         title = self.extract_from_class_patterns(soup)
         if title:
             return title
-        
-        # Priority 7: Paragraph keywords
         title = self.extract_from_paragraph_keywords(soup)
         if title:
             return title
-        
-        # Priority 8: Filename
         title = self.extract_from_filename(filename)
         if title:
             return title
-        
         return None
 
 
 class EPUBScanner:
     """Main scanner class for processing EPUB files."""
     
-    def __init__(self, console: Console):
-        self.console = console
+    def __init__(self, log_callback=None, progress_callback=None):
+        self.log_callback = log_callback
+        self.progress_callback = progress_callback
         self.scanned_books: List[Dict] = []
         self.total_time = 0.0
         self.total_illustrations = 0
@@ -681,20 +580,33 @@ class EPUBScanner:
         self.pdf_style = "detailed"
         self.output_dir = DEFAULT_OUTPUT_DIR
         self.toc_titles: Dict[str, str] = {}
-        self.pdf_generator = PDFGenerator(console)
+        self.pdf_generator = PDFGenerator(log_callback)
         self.title_extractor = TitleExtractor()
+        self.should_stop = False
         
-    def process_epub(self, filepath: Path, progress_callback=None) -> Optional[Dict]:
-        """Process a single EPUB file and return its data."""
+    def _log(self, message):
+        if self.log_callback:
+            self.log_callback(message)
+        
+    def _update_progress(self, message, value=None):
+        if self.progress_callback:
+            self.progress_callback(message, value)
+        
+    def stop(self):
+        self.should_stop = True
+        
+    def process_epub(self, filepath: Path) -> Optional[Dict]:
         try:
-            if progress_callback:
-                progress_callback(f"Processing {filepath.name}...")
+            self._update_progress(f"Processing {filepath.name}...")
             
             book = epub.read_epub(str(filepath))
             title = self._get_title(book)
             self.toc_titles = self._build_toc_mapping(book)
             
             chapters, illustrations = self._process_reading_order(book)
+            
+            if self.should_stop:
+                return None
             
             if not self.keep_duplicates:
                 illustrations = self._deduplicate_illustrations(illustrations)
@@ -734,13 +646,12 @@ class EPUBScanner:
             return result
             
         except Exception as e:
-            self.console.print(f"[red]✗ Error processing {filepath.name}: {str(e)}[/]")
+            self._log(f"✗ Error processing {filepath.name}: {str(e)}")
             import traceback
-            self.console.print(f"[dim]{traceback.format_exc()}[/]")
+            self._log(f"{traceback.format_exc()}")
             return None
     
     def _get_title(self, book) -> str:
-        """Extract the title from EPUB metadata."""
         try:
             metadata = book.get_metadata('DC', 'title')
             if metadata:
@@ -750,14 +661,12 @@ class EPUBScanner:
         return "Unknown Title"
     
     def _build_toc_mapping(self, book) -> Dict[str, str]:
-        """Build a mapping from filename to TOC title."""
         toc_map = {}
         try:
             for item in book.get_items():
                 if item.get_type() == ebooklib.ITEM_NAVIGATION:
                     content = item.get_content().decode('utf-8', errors='ignore')
                     soup = BeautifulSoup(content, 'html.parser')
-                    
                     for link in soup.find_all(['a', 'link']):
                         href = link.get('href')
                         text = link.get_text(strip=True)
@@ -767,7 +676,6 @@ class EPUBScanner:
                                 toc_map[href] = text
         except:
             pass
-        
         try:
             if hasattr(book, 'toc'):
                 for toc_item in book.toc:
@@ -781,11 +689,9 @@ class EPUBScanner:
                             toc_map[href] = toc_item.text
         except:
             pass
-        
         return toc_map
     
     def _process_reading_order(self, book) -> Tuple[List[Chapter], List[Illustration]]:
-        """Process the EPUB in reading order."""
         chapters = []
         illustrations = []
         image_counter = 0
@@ -805,18 +711,14 @@ class EPUBScanner:
         for item_id in spine_item_ids:
             if item_id in doc_items:
                 item = doc_items[item_id]
-                
                 try:
                     content = item.get_content().decode('utf-8', errors='ignore')
                     soup = BeautifulSoup(content, 'html.parser')
                     
                     toc_title = self.toc_titles.get(item.file_name, '')
-                    
-                    # Use the improved title extractor
                     section_title = self.title_extractor.extract_title(
                         soup, item.file_name, toc_title
                     )
-                    
                     section_type = self._detect_section_type(soup, item.file_name, section_title)
                     
                     chapter = Chapter(
@@ -833,7 +735,6 @@ class EPUBScanner:
                         src = self._get_image_src(img)
                         if src and self._is_valid_illustration(img, src):
                             image_counter += 1
-                            
                             img_content = self._get_image_content(book, src)
                             mime_type = self._detect_mime_type(src, img_content)
                             
@@ -862,18 +763,16 @@ class EPUBScanner:
                     chapters.append(chapter)
                     
                 except Exception as e:
-                    self.console.print(f"[yellow]Warning: Could not parse {item.file_name}: {str(e)}[/]")
+                    self._log(f"Warning: Could not parse {item.file_name}: {str(e)}")
                     continue
         
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT and item.get_id() not in spine_item_ids:
                 if item.file_name and ('nav' in item.file_name.lower() or 'toc' in item.file_name.lower()):
                     continue
-                
                 try:
                     content = item.get_content().decode('utf-8', errors='ignore')
                     soup = BeautifulSoup(content, 'html.parser')
-                    
                     text = soup.get_text(strip=True)
                     if len(text) > 100:
                         toc_title = self.toc_titles.get(item.file_name, '')
@@ -881,7 +780,6 @@ class EPUBScanner:
                             soup, item.file_name, toc_title
                         )
                         section_type = self._detect_section_type(soup, item.file_name, section_title)
-                        
                         chapter = Chapter(
                             index=len(chapters),
                             title=section_title or f"Section {len(chapters) + 1}",
@@ -890,7 +788,6 @@ class EPUBScanner:
                             is_section=section_type != "chapter",
                             section_type=section_type
                         )
-                        
                         chapters.append(chapter)
                 except:
                     pass
@@ -898,7 +795,6 @@ class EPUBScanner:
         return chapters, illustrations
     
     def _detect_mime_type(self, filename: str, content: Optional[bytes] = None) -> Optional[str]:
-        """Detect MIME type from filename or content."""
         ext = os.path.splitext(filename)[1].lower()
         mime_map = {
             '.jpg': 'image/jpeg',
@@ -911,10 +807,8 @@ class EPUBScanner:
             '.tiff': 'image/tiff',
             '.tif': 'image/tiff',
         }
-        
         if ext in mime_map:
             return mime_map[ext]
-        
         if content and len(content) > 8:
             if content[:8] == b'\x89PNG\r\n\x1a\n':
                 return 'image/png'
@@ -924,20 +818,15 @@ class EPUBScanner:
                 return 'image/gif'
             if content[:4] == b'RIFF' and content[8:12] == b'WEBP':
                 return 'image/webp'
-        
         return None
     
     def _detect_section_type(self, soup: BeautifulSoup, filename: str, title: Optional[str] = None) -> str:
-        """Detect the type of section."""
         text = soup.get_text().lower()
-        
         if re.search(r'cover|title page|half title', filename, re.IGNORECASE):
             return "cover"
-        
         if re.search(r'color|colored?|colorplate', filename, re.IGNORECASE) or \
            (re.search(r'color', text, re.IGNORECASE) and re.search(r'illustration|plate', text, re.IGNORECASE)):
             return "color_illustrations"
-        
         for section_type, patterns in SECTION_PATTERNS.items():
             for pattern in patterns:
                 if title and re.search(pattern, title, re.IGNORECASE):
@@ -946,25 +835,19 @@ class EPUBScanner:
                     return section_type
                 if re.search(pattern, text, re.IGNORECASE):
                     return section_type
-        
         if re.search(r'chapter\s*(\d+)', text, re.IGNORECASE) or \
            re.search(r'chapter\s*(\d+)', filename, re.IGNORECASE) or \
            (title and re.search(r'chapter\s*(\d+)', title, re.IGNORECASE)):
             return "chapter"
-        
         if re.search(r'^\s*(?:\d+\.?\s*|第\d+[章话])\s*', text[:200]):
             return "chapter"
-        
         if re.search(r'short story|side story|bonus|extra', text, re.IGNORECASE):
             return "extra"
-        
         if re.search(r'afterword|postscript|author\'s note', text, re.IGNORECASE):
             return "afterword"
-        
         return "chapter"
     
     def _assign_chapter_numbers(self, chapters: List[Chapter]) -> None:
-        """Assign sequential numbers to chapters."""
         chapter_counter = 1
         for chapter in chapters:
             if chapter.section_type == "chapter" or chapter.section_type not in ["color_illustrations", "extra", "cover", "title_page", "afterword"]:
@@ -974,7 +857,6 @@ class EPUBScanner:
                 chapter.index = None
     
     def _get_image_src(self, img_tag) -> Optional[str]:
-        """Extract src attribute from image tag."""
         if img_tag.name == 'img':
             return img_tag.get('src')
         elif img_tag.name == 'image':
@@ -982,18 +864,14 @@ class EPUBScanner:
         return None
     
     def _is_valid_illustration(self, img_tag, src: str) -> bool:
-        """Determine if an image is a valid illustration."""
         if not src:
             return False
-        
         icon_patterns = ['icon', 'logo', 'banner', 'spacer', 'dot', 'bullet', 'separator', 'btn', 'button']
         if any(pattern in src.lower() for pattern in icon_patterns):
             return False
-        
         skip_extensions = ['.gif']
         if any(src.lower().endswith(ext) for ext in skip_extensions):
             return False
-        
         width = img_tag.get('width')
         height = img_tag.get('height')
         if width and height:
@@ -1003,17 +881,14 @@ class EPUBScanner:
                     return False
             except:
                 pass
-        
         return True
     
     def _get_image_content(self, book, src: str) -> Optional[bytes]:
-        """Retrieve image content from the EPUB."""
         try:
             parsed = urlparse(src)
             path = parsed.path
             if path.startswith('/'):
                 path = path[1:]
-            
             for item in book.get_items():
                 if item.get_type() == ebooklib.ITEM_IMAGE:
                     if item.file_name.endswith(path) or os.path.basename(item.file_name) == os.path.basename(path):
@@ -1023,7 +898,6 @@ class EPUBScanner:
         return None
     
     def _get_image_dimensions(self, img_tag, illustration: Illustration) -> None:
-        """Extract image dimensions if available."""
         width = img_tag.get('width')
         height = img_tag.get('height')
         if width and height:
@@ -1034,19 +908,15 @@ class EPUBScanner:
                 pass
     
     def _are_duplicates(self, illus1: Illustration, illus2: Illustration) -> bool:
-        """Check if two illustrations are duplicates."""
         if illus1.filename == illus2.filename:
             return True
-        
         if illus1.content and illus2.content:
             hash1 = hashlib.md5(illus1.content).hexdigest()
             hash2 = hashlib.md5(illus2.content).hexdigest()
             return hash1 == hash2
-        
         return False
     
     def _deduplicate_illustrations(self, illustrations: List[Illustration]) -> List[Illustration]:
-        """Remove duplicate illustrations."""
         seen = set()
         unique = []
         for illus in illustrations:
@@ -1061,10 +931,8 @@ class EPUBScanner:
         return unique
     
     def _extract_illustrations(self, book_title: str, illustrations: List[Illustration]) -> None:
-        """Extract illustrations to the output directory."""
         output_path = self.output_dir / "extracted_images" / book_title
         output_path.mkdir(parents=True, exist_ok=True)
-        
         for illus in illustrations:
             if illus.content:
                 try:
@@ -1080,18 +948,15 @@ class EPUBScanner:
                         ext = ext_map.get(illus.mime_type, '.jpg')
                     elif not ext:
                         ext = '.jpg'
-                    
                     filename = f"{illus.index:03d}{ext}"
                     filepath = output_path / filename
-                    
                     if not filepath.exists():
                         with open(filepath, 'wb') as f:
                             f.write(illus.content)
                 except Exception as e:
-                    self.console.print(f"[red]Could not extract {illus.filename}: {str(e)}[/]")
+                    self._log(f"Could not extract {illus.filename}: {str(e)}")
     
     def _chapter_to_dict(self, chapter: Chapter) -> Dict:
-        """Convert Chapter to dictionary."""
         return {
             "index": chapter.index,
             "title": chapter.title,
@@ -1102,7 +967,6 @@ class EPUBScanner:
         }
     
     def _illustration_to_dict(self, illus: Illustration) -> Dict:
-        """Convert Illustration to dictionary."""
         return {
             "index": illus.index,
             "section": illus.section,
@@ -1118,7 +982,6 @@ class EPUBScanner:
         }
     
     def export_json(self, result: Dict, output_dir: Path) -> None:
-        """Export results to JSON."""
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = Path(result["filepath"]).stem
         
@@ -1134,14 +997,11 @@ class EPUBScanner:
             json_result["illustrations"].append(illus_copy)
         
         json_path = output_dir / f"{filename}.json"
-        
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(json_result, f, indent=2, ensure_ascii=False)
-        
-        self.console.print(f"[green]✓ JSON exported to {json_path}[/]")
+        self._log(f"✓ JSON exported to {json_path}")
     
     def export_csv(self, result: Dict, output_dir: Path) -> None:
-        """Export results to CSV."""
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = Path(result["filepath"]).stem
         csv_path = output_dir / f"{filename}.csv"
@@ -1168,17 +1028,15 @@ class EPUBScanner:
                     mime_type,
                     is_dup
                 ])
-        
-        self.console.print(f"[green]✓ CSV exported to {csv_path}[/]")
+        self._log(f"✓ CSV exported to {csv_path}")
     
-    def display_results(self, result: Dict) -> None:
-        """Display results in a formatted table."""
+    def get_results_text(self, result: Dict) -> str:
+        lines = []
         title = result.get("title", "Unknown Title")
         
-        self.console.print()
-        self.console.print(f"[bold cyan]═[/]" * 50)
-        self.console.print(f"[bold] {title}[/]")
-        self.console.print(f"[bold cyan]═[/]" * 50)
+        lines.append("═" * 60)
+        lines.append(f" {title}")
+        lines.append("═" * 60)
         
         chapters_with_illustrations = []
         for chapter in result["chapters"]:
@@ -1191,150 +1049,694 @@ class EPUBScanner:
         for chapter in chapters_with_illustrations:
             if chapter["illustration_count"] > 0:
                 prefix = "✓" if not chapter["is_section"] else "◆"
-                self.console.print(f"\n[green]{prefix} {chapter['title']}[/]")
-                
+                lines.append(f"\n{prefix} {chapter['title']}")
                 for illus in result["illustrations"]:
                     if illus["chapter"] == chapter["index"] or (illus["section"] == chapter["title"] and chapter["is_section"]):
                         if not illus["is_duplicate"] or self.keep_duplicates:
-                            dup_marker = " [dim](duplicate)[/]" if illus["is_duplicate"] else ""
-                            self.console.print(f"    [yellow]Illustration #{illus['index']}[/]{dup_marker}")
-                            self.console.print(f"    [dim]{illus['filename']}[/]")
+                            dup_marker = " (duplicate)" if illus["is_duplicate"] else ""
+                            lines.append(f"    Illustration #{illus['index']}{dup_marker}")
+                            lines.append(f"    {illus['filename']}")
                             if illus.get('width') and illus.get('height'):
-                                self.console.print(f"    [dim]{illus['width']}×{illus['height']}[/]")
+                                lines.append(f"    {illus['width']}×{illus['height']}")
             else:
-                self.console.print(f"\n[dim]✓ {chapter['title']}[/]")
-                self.console.print(f"    [dim](No illustrations)[/]")
+                lines.append(f"\n✓ {chapter['title']}")
+                lines.append(f"    (No illustrations)")
         
-        self.console.print()
-        self.console.print(f"[bold cyan]─[/]" * 50)
+        lines.append("\n" + "─" * 60)
         unique_count = len([i for i in result['illustrations'] if not i.get('is_duplicate', False)])
-        self.console.print(f"[green]Total Illustrations: {result['illustration_count']}[/]")
+        lines.append(f"Total Illustrations: {result['illustration_count']}")
         if not self.keep_duplicates:
-            self.console.print(f"[green]Unique Illustrations: {unique_count}[/]")
-        self.console.print()
+            lines.append(f"Unique Illustrations: {unique_count}")
+        
+        return "\n".join(lines)
+
+
+class ModernEPUBScannerGUI:
+    """Modern Tkinter GUI for the EPUB Scanner with custom styling and validation."""
     
-    def display_summary(self) -> None:
-        """Display final summary table."""
-        if not self.scanned_books:
-            self.console.print("[red]No books were scanned successfully.[/]")
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("EPUB Illustration Scanner")
+        self.root.geometry("1000x800")
+        self.root.minsize(800, 600)
+        
+        # Configure style
+        self._setup_colors()
+        self._setup_styles()
+        
+        # Variables
+        self.scanner = None
+        self.scan_thread = None
+        self.is_scanning = False
+        
+        # Validation state
+        self.validation_errors = []
+        
+        # Create UI
+        self._create_widgets()
+        
+        # Center window on screen
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+        
+    def _setup_colors(self):
+        """Setup color scheme."""
+        self.colors = {
+            'bg': '#f8f9fa',
+            'bg_light': '#ffffff',
+            'fg': '#1a1a2e',
+            'fg_secondary': '#4a4a6a',
+            'accent': '#6c5ce7',
+            'accent_light': '#a29bfe',
+            'success': '#00b894',
+            'error': '#ff6b6b',
+            'warning': '#fdcb6e',
+            'info': '#74b9ff',
+            'border': '#dfe6e9',
+            'required': '#ff6b6b',
+            'valid': '#00b894'
+        }
+        
+    def _setup_styles(self):
+        """Setup ttk styles."""
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Configure default styles
+        style.configure('.', font=('Segoe UI', 10), background=self.colors['bg'])
+        
+        # Title style
+        style.configure('Title.TLabel', font=('Segoe UI', 18, 'bold'), foreground=self.colors['fg'])
+        
+        # Header style
+        style.configure('Header.TLabel', font=('Segoe UI', 11, 'bold'), foreground=self.colors['fg'])
+        
+        # Required field label
+        style.configure('Required.TLabel', font=('Segoe UI', 10), foreground=self.colors['required'])
+        
+        # Accent button
+        style.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'), 
+                       foreground='white', background=self.colors['accent'],
+                       padding=(20, 8))
+        style.map('Accent.TButton',
+                 background=[('active', self.colors['accent_light'])])
+        
+        # Success button
+        style.configure('Success.TButton', font=('Segoe UI', 10, 'bold'),
+                       foreground='white', background=self.colors['success'],
+                       padding=(20, 8))
+        style.map('Success.TButton',
+                 background=[('active', '#00a381')])
+        
+        # Danger button
+        style.configure('Danger.TButton', font=('Segoe UI', 10, 'bold'),
+                       foreground='white', background=self.colors['error'],
+                       padding=(20, 8))
+        style.map('Danger.TButton',
+                 background=[('active', '#ff5252')])
+        
+        # Card frame
+        style.configure('Card.TFrame', background=self.colors['bg_light'], relief='flat')
+        
+        # LabelFrame
+        style.configure('Card.TLabelframe', background=self.colors['bg_light'], 
+                       relief='flat', borderwidth=1)
+        style.configure('Card.TLabelframe.Label', font=('Segoe UI', 11, 'bold'),
+                       foreground=self.colors['fg'])
+        
+        # Progressbar
+        style.configure('TProgressbar', background=self.colors['accent'], 
+                       troughcolor=self.colors['border'], thickness=8)
+        
+    def _create_widgets(self):
+        """Create the GUI widgets."""
+        # Main container
+        main_frame = ttk.Frame(self.root, padding="20")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(5, weight=1)
+        
+        # Header
+        header_frame = ttk.Frame(main_frame)
+        header_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 20))
+        header_frame.columnconfigure(0, weight=1)
+        
+        title_label = ttk.Label(
+            header_frame, 
+            text="📚 EPUB Illustration Scanner", 
+            style='Title.TLabel'
+        )
+        title_label.grid(row=0, column=0, sticky=tk.W)
+        
+        subtitle_label = ttk.Label(
+            header_frame,
+            text="Extract and catalog illustrations from EPUB files",
+            font=('Segoe UI', 10),
+            foreground=self.colors['fg_secondary']
+        )
+        subtitle_label.grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
+        
+        # Input section
+        input_frame = ttk.Frame(main_frame, style='Card.TFrame')
+        input_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        input_frame.columnconfigure(1, weight=1)
+        
+        # File selection
+        file_card = ttk.LabelFrame(input_frame, text="📁 Input", style='Card.TLabelframe', padding="15")
+        file_card.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        file_card.columnconfigure(1, weight=1)
+        
+        # Required field indicator
+        ttk.Label(file_card, text="* Required", style='Required.TLabel').grid(
+            row=0, column=3, sticky=tk.E, padx=(10, 0)
+        )
+        
+        ttk.Label(file_card, text="Path:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.path_var = tk.StringVar()
+        self.path_var.trace('w', lambda *args: self._validate_field('path'))
+        path_entry = ttk.Entry(file_card, textvariable=self.path_var, font=('Segoe UI', 10))
+        path_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        browse_btn = ttk.Button(
+            file_card, 
+            text="📂 Browse", 
+            command=self._browse_file,
+            style='Accent.TButton'
+        )
+        browse_btn.grid(row=0, column=2)
+        
+        # Path validation status
+        self.path_status = ttk.Label(file_card, text="", font=('Segoe UI', 9))
+        self.path_status.grid(row=1, column=1, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        
+        # Selection type
+        type_frame = ttk.Frame(file_card)
+        type_frame.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+        
+        ttk.Label(type_frame, text="Selection:", style='Header.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.file_type_var = tk.StringVar(value="file")
+        self.file_type_var.trace('w', lambda *args: self._validate_field('path'))
+        ttk.Radiobutton(
+            type_frame, 
+            text="📄 Single EPUB", 
+            variable=self.file_type_var, 
+            value="file"
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(
+            type_frame, 
+            text="📁 Folder of EPUBs", 
+            variable=self.file_type_var, 
+            value="folder"
+        ).pack(side=tk.LEFT)
+        
+        # Output path
+        output_frame = ttk.Frame(file_card)
+        output_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
+        output_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(output_frame, text="Output:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.output_var = tk.StringVar(value=str(Path("output").absolute()))
+        self.output_var.trace('w', lambda *args: self._validate_field('output'))
+        output_entry = ttk.Entry(output_frame, textvariable=self.output_var, font=('Segoe UI', 10))
+        output_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        output_browse_btn = ttk.Button(
+            output_frame, 
+            text="📂 Browse", 
+            command=self._browse_output,
+            style='Accent.TButton'
+        )
+        output_browse_btn.grid(row=0, column=2)
+        
+        # Output validation status
+        self.output_status = ttk.Label(output_frame, text="", font=('Segoe UI', 9))
+        self.output_status.grid(row=1, column=1, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        
+        # Options section
+        options_card = ttk.LabelFrame(input_frame, text="⚙️ Options", style='Card.TLabelframe', padding="15")
+        options_card.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        options_card.columnconfigure(0, weight=1)
+        
+        # Options grid - two columns for better layout
+        left_options = ttk.Frame(options_card)
+        left_options.grid(row=0, column=0, sticky=(tk.W, tk.N))
+        
+        right_options = ttk.Frame(options_card)
+        right_options.grid(row=0, column=1, sticky=(tk.W, tk.N), padx=(20, 0))
+        
+        self.keep_duplicates_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            left_options, 
+            text="🔄 Keep duplicate images", 
+            variable=self.keep_duplicates_var
+        ).pack(anchor=tk.W, pady=2)
+        
+        self.extract_images_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            left_options, 
+            text="💾 Extract illustrations", 
+            variable=self.extract_images_var
+        ).pack(anchor=tk.W, pady=2)
+        
+        self.generate_pdf_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            left_options, 
+            text="📄 Generate PDF catalog", 
+            variable=self.generate_pdf_var
+        ).pack(anchor=tk.W, pady=2)
+        
+        # PDF style
+        pdf_style_frame = ttk.Frame(right_options)
+        pdf_style_frame.pack(anchor=tk.W, pady=2)
+        
+        ttk.Label(pdf_style_frame, text="PDF Style:", style='Header.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.pdf_style_var = tk.StringVar(value="detailed")
+        ttk.Radiobutton(
+            pdf_style_frame, 
+            text="Detailed", 
+            variable=self.pdf_style_var, 
+            value="detailed"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            pdf_style_frame, 
+            text="Simple", 
+            variable=self.pdf_style_var, 
+            value="simple"
+        ).pack(side=tk.LEFT)
+        
+        # Button row
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(15, 10))
+        
+        self.scan_btn = ttk.Button(
+            button_frame, 
+            text="🚀 Start Scan", 
+            command=self._start_scan,
+            style='Success.TButton'
+        )
+        self.scan_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.stop_btn = ttk.Button(
+            button_frame, 
+            text="⏹ Stop", 
+            command=self._stop_scan, 
+            state=tk.DISABLED,
+            style='Danger.TButton'
+        )
+        self.stop_btn.pack(side=tk.LEFT)
+        
+        # Progress section
+        progress_frame = ttk.Frame(main_frame)
+        progress_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        progress_frame.columnconfigure(0, weight=1)
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
+            progress_frame, 
+            variable=self.progress_var, 
+            maximum=100
+        )
+        self.progress_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        self.progress_label = ttk.Label(progress_frame, text="0%", font=('Segoe UI', 10, 'bold'))
+        self.progress_label.grid(row=0, column=1)
+        
+        # Status
+        self.status_label = ttk.Label(
+            main_frame, 
+            text="🟢 Ready", 
+            font=('Segoe UI', 10)
+        )
+        self.status_label.grid(row=4, column=0, sticky=tk.W, pady=(0, 10))
+        
+        # Results
+        results_card = ttk.LabelFrame(main_frame, text="📊 Results", style='Card.TLabelframe', padding="10")
+        results_card.grid(row=5, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        results_card.columnconfigure(0, weight=1)
+        results_card.rowconfigure(0, weight=1)
+        
+        # Create text widget with custom styling
+        text_frame = ttk.Frame(results_card)
+        text_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+        
+        self.results_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            bg=self.colors['bg_light'],
+            fg=self.colors['fg'],
+            insertbackground=self.colors['fg'],
+            relief=tk.FLAT,
+            borderwidth=0,
+            padx=10,
+            pady=10,
+            spacing1=2,
+            spacing2=1
+        )
+        self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.results_text.yview)
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.results_text.config(yscrollcommand=scrollbar.set)
+        
+        # Configure grid weights
+        main_frame.rowconfigure(5, weight=1)
+        
+        # Initialize validation
+        self._validate_all()
+        
+    def _validate_field(self, field):
+        """Validate a specific field."""
+        if field == 'path':
+            self._validate_path()
+        elif field == 'output':
+            self._validate_output()
+        self._update_scan_button()
+    
+    def _validate_all(self):
+        """Validate all fields."""
+        self._validate_path()
+        self._validate_output()
+        self._update_scan_button()
+    
+    def _validate_path(self) -> bool:
+        """Validate the input path."""
+        path_str = self.path_var.get().strip()
+        is_valid = False
+        message = ""
+        color = self.colors['error']
+        
+        if not path_str:
+            message = "⚠️ Required field - please select an EPUB file or folder"
+            color = self.colors['error']
+        else:
+            path = Path(path_str)
+            if not path.exists():
+                message = "❌ Path does not exist"
+                color = self.colors['error']
+            elif path.is_file() and path.suffix.lower() != '.epub':
+                message = "❌ Selected file is not an EPUB"
+                color = self.colors['error']
+            elif path.is_dir():
+                # Check if folder contains EPUBs
+                epub_files = list(path.rglob('*.epub'))
+                if epub_files:
+                    message = f"✅ Found {len(epub_files)} EPUB file(s)"
+                    color = self.colors['valid']
+                    is_valid = True
+                else:
+                    message = "⚠️ No EPUB files found in this folder"
+                    color = self.colors['warning']
+            else:
+                # Single EPUB file
+                message = f"✅ Valid EPUB file: {path.name}"
+                color = self.colors['valid']
+                is_valid = True
+        
+        self.path_status.config(text=message, foreground=color)
+        return is_valid
+    
+    def _validate_output(self) -> bool:
+        """Validate the output directory."""
+        output_str = self.output_var.get().strip()
+        is_valid = False
+        message = ""
+        color = self.colors['error']
+        
+        if not output_str:
+            message = "⚠️ Required field - please select an output directory"
+            color = self.colors['error']
+        else:
+            output_path = Path(output_str)
+            try:
+                # Check if we can create the directory
+                output_path.mkdir(parents=True, exist_ok=True)
+                message = f"✅ Valid output directory: {output_path}"
+                color = self.colors['valid']
+                is_valid = True
+            except Exception as e:
+                message = f"❌ Cannot create directory: {str(e)}"
+                color = self.colors['error']
+        
+        self.output_status.config(text=message, foreground=color)
+        return is_valid
+    
+    def _update_scan_button(self):
+        """Update the scan button state based on validation."""
+        path_valid = self._validate_path()
+        output_valid = self._validate_output()
+        self.scan_btn.config(state=tk.NORMAL if (path_valid and output_valid and not self.is_scanning) else tk.DISABLED)
+        
+        if not self.is_scanning:
+            if path_valid and output_valid:
+                self.scan_btn.config(text="🚀 Start Scan", style='Success.TButton')
+            else:
+                self.scan_btn.config(text="⚠️ Fix Validation Errors", style='Accent.TButton')
+    
+    def _browse_file(self):
+        """Browse for EPUB file or folder."""
+        if self.file_type_var.get() == "file":
+            filepath = filedialog.askopenfilename(
+                title="Select EPUB file",
+                filetypes=[("EPUB files", "*.epub"), ("All files", "*.*")]
+            )
+            if filepath:
+                self.path_var.set(filepath)
+        else:
+            folder = filedialog.askdirectory(
+                title="Select folder containing EPUB files"
+            )
+            if folder:
+                self.path_var.set(folder)
+    
+    def _browse_output(self):
+        """Browse for output directory."""
+        folder = filedialog.askdirectory(
+            title="Select output directory"
+        )
+        if folder:
+            self.output_var.set(folder)
+    
+    def _log_message(self, message):
+        """Add a message to the log with color coding."""
+        tags = []
+        if "✓" in message or "✅" in message or "Complete" in message:
+            tags.append("success")
+        elif "✗" in message or "❌" in message or "Error" in message or "error" in message.lower():
+            tags.append("error")
+        elif "⚠" in message or "Warning" in message:
+            tags.append("warning")
+        elif "📊" in message or "===" in message:
+            tags.append("header")
+        elif "📚" in message or "🚀" in message:
+            tags.append("info")
+        
+        # Configure tags
+        self.results_text.tag_config("success", foreground=self.colors['success'])
+        self.results_text.tag_config("error", foreground=self.colors['error'])
+        self.results_text.tag_config("warning", foreground=self.colors['warning'])
+        self.results_text.tag_config("info", foreground=self.colors['info'])
+        self.results_text.tag_config("header", foreground=self.colors['accent'], font=('Consolas', 10, 'bold'))
+        
+        # Insert with appropriate tag
+        self.results_text.insert(tk.END, message + "\n", tuple(tags) if tags else ())
+        self.results_text.see(tk.END)
+        self.root.update_idletasks()
+    
+    def _update_progress(self, message, value=None):
+        """Update progress bar and status."""
+        if value is not None:
+            self.progress_var.set(value)
+            self.progress_label.config(text=f"{int(value)}%")
+        
+        if message:
+            # Update status with dynamic styling
+            if "Processing" in message:
+                status_text = f"🔄 {message}"
+                color = self.colors['info']
+            elif "Complete" in message or "✓" in message or "✅" in message:
+                status_text = f"✅ {message}"
+                color = self.colors['success']
+            elif "Error" in message or "✗" in message or "❌" in message:
+                status_text = f"❌ {message}"
+                color = self.colors['error']
+            else:
+                status_text = f"ℹ️ {message}"
+                color = self.colors['fg']
+            
+            self.status_label.config(text=status_text, foreground=color)
+            self._log_message(message)
+        
+        self.root.update_idletasks()
+    
+    def _start_scan(self):
+        """Start the scanning process."""
+        if self.is_scanning:
             return
         
-        table = Table(title="Scan Summary", show_header=True, header_style="bold magenta")
-        table.add_column("EPUB", style="cyan", no_wrap=True)
-        table.add_column("Images", justify="right", style="green")
-        table.add_column("PDF", justify="center", style="yellow")
+        # Validate before starting
+        if not self._validate_all():
+            messagebox.showwarning("Validation Error", 
+                "Please fix all validation errors before starting the scan.\n"
+                "Make sure both input and output paths are valid.")
+            return
         
-        total_images = 0
-        for book in self.scanned_books:
-            title = book.get("title", "Unknown")
-            count = book.get("illustration_count", 0)
-            has_pdf = "✓" if self.generate_pdf and PDF_SUPPORT else "—"
-            table.add_row(title, str(count), has_pdf)
-            total_images += count
+        path_str = self.path_var.get().strip()
+        path = Path(path_str)
         
-        self.console.print(table)
-        self.console.print()
-        self.console.print(f"Books scanned: [cyan]{len(self.scanned_books)}[/]")
-        self.console.print(f"Illustrations: [green]{total_images}[/]")
-        self.console.print(f"Time elapsed : [yellow]{self.total_time:.2f} seconds[/]")
-        if self.generate_pdf and PDF_SUPPORT:
-            self.console.print(f"PDF catalogs: [yellow]Generated in {self.output_dir}/pdf_catalogs/[/]")
-        if self.extract_images:
-            self.console.print(f"Images extracted: [green]{self.output_dir}/extracted_images/[/]")
+        # Determine files to scan
+        if path.is_file() and path.suffix.lower() == '.epub':
+            files_to_scan = [path]
+        elif path.is_dir():
+            files_to_scan = list(path.rglob('*.epub'))
+            if not files_to_scan:
+                messagebox.showerror("Error", "No EPUB files found in the selected folder.")
+                return
+        else:
+            messagebox.showerror("Error", "Invalid input path.")
+            return
+        
+        # Set output directory
+        output_dir = Path(self.output_var.get().strip())
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Cannot create output directory: {str(e)}")
+            return
+        
+        # Disable controls
+        self.scan_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.is_scanning = True
+        self.progress_var.set(0)
+        self.progress_label.config(text="0%")
+        self.results_text.delete(1.0, tk.END)
+        self._log_message("🚀 Starting scan...")
+        self._log_message(f"📁 Input: {path}")
+        self._log_message(f"📂 Output: {output_dir}")
+        self._log_message(f"📚 Found {len(files_to_scan)} EPUB file(s)")
+        self._log_message("=" * 60)
+        
+        # Create scanner with callbacks
+        self.scanner = EPUBScanner(
+            log_callback=self._log_message,
+            progress_callback=self._update_progress
+        )
+        
+        # Set options
+        self.scanner.keep_duplicates = self.keep_duplicates_var.get()
+        self.scanner.extract_images = self.extract_images_var.get()
+        self.scanner.generate_pdf = self.generate_pdf_var.get()
+        self.scanner.pdf_style = self.pdf_style_var.get()
+        self.scanner.output_dir = output_dir
+        
+        # Start scan in separate thread
+        self.scan_thread = threading.Thread(target=self._scan_worker, args=(files_to_scan,))
+        self.scan_thread.daemon = True
+        self.scan_thread.start()
+    
+    def _scan_worker(self, files_to_scan):
+        """Worker thread for scanning multiple files."""
+        total_files = len(files_to_scan)
+        successful = 0
+        total_illustrations = 0
+        
+        try:
+            for idx, filepath in enumerate(files_to_scan, 1):
+                if self.scanner.should_stop:
+                    self._log_message("⏹ Scan cancelled by user.")
+                    break
+                
+                # Update progress
+                progress = (idx / total_files) * 100
+                self._update_progress(f"Processing {filepath.name} ({idx}/{total_files})...", progress)
+                
+                result = self.scanner.process_epub(filepath)
+                
+                if result:
+                    self.scanner.scanned_books.append(result)
+                    self.scanner.total_illustrations += result['illustration_count']
+                    total_illustrations += result['illustration_count']
+                    
+                    # Export results
+                    output_dir = self.scanner.output_dir / "data"
+                    self.scanner.export_json(result, output_dir)
+                    self.scanner.export_csv(result, output_dir)
+                    
+                    # Display results
+                    results_text = self.scanner.get_results_text(result)
+                    self._log_message("\n" + results_text)
+                    self._log_message(f"\n✅ Export complete. Files saved to {output_dir}")
+                    
+                    if self.scanner.extract_images:
+                        self._log_message(f"💾 Images extracted to {self.scanner.output_dir}/extracted_images/")
+                    if self.scanner.generate_pdf and PDF_SUPPORT:
+                        self._log_message(f"📄 PDF catalogs generated in {self.scanner.output_dir}/pdf_catalogs/")
+                    
+                    successful += 1
+                else:
+                    self._log_message(f"❌ Failed to process {filepath.name}")
+            
+            # Final summary
+            self._log_message("\n" + "=" * 60)
+            self._log_message("📊 SCAN COMPLETE")
+            self._log_message(f"✅ Successfully processed: {successful}/{total_files}")
+            self._log_message(f"📚 Total illustrations found: {total_illustrations}")
+            
+            if self.scanner.generate_pdf and PDF_SUPPORT:
+                self._log_message(f"📄 PDF catalogs: {self.scanner.output_dir}/pdf_catalogs/")
+            if self.scanner.extract_images:
+                self._log_message(f"💾 Extracted images: {self.scanner.output_dir}/extracted_images/")
+            
+            self._log_message("=" * 60)
+            self._log_message("✨ All tasks completed successfully!")
+            
+        except Exception as e:
+            self._log_message(f"❌ Fatal error: {str(e)}")
+            import traceback
+            self._log_message(traceback.format_exc())
+        
+        finally:
+            self.root.after(0, self._scan_complete)
+    
+    def _scan_complete(self):
+        """Called when scan is complete."""
+        self.is_scanning = False
+        self.stop_btn.config(state=tk.DISABLED)
+        self.status_label.config(text="✅ Scan Complete", foreground=self.colors['success'])
+        self.progress_var.set(100)
+        self.progress_label.config(text="100%")
+        self._update_scan_button()
+    
+    def _stop_scan(self):
+        """Stop the scanning process."""
+        if self.scanner:
+            self.scanner.stop()
+            self._log_message("⏹ Stopping scan...")
+            self.stop_btn.config(state=tk.DISABLED)
+    
+    def run(self):
+        """Run the GUI."""
+        self.root.mainloop()
 
 
 def main():
     """Main entry point for the application."""
-    console = Console()
-    scanner = EPUBScanner(console)
-    
-    welcome_text = Text()
-    welcome_text.append("📚 ", style="bold cyan")
-    welcome_text.append("EPUB Scanner", style="bold white")
-    welcome_text.append("\nScan EPUB files and locate illustrations")
-    welcome_text.append("\n\nMade for light novels", style="dim")
-    
-    console.print(Panel(welcome_text, title="Welcome", border_style="cyan"))
-    
-    console.print()
-    choice = Prompt.ask(
-        "What would you like to scan?",
-        choices=["1", "2"],
-        default="1",
-        show_choices=True
-    )
-    
-    if choice == "1":
-        path_str = Prompt.ask("Enter the path to the EPUB file")
-    else:
-        path_str = Prompt.ask("Enter the path to the folder containing EPUB files")
-    
-    path_str = path_str.strip('"').strip("'")
-    path = Path(path_str).expanduser().resolve()
-    
-    if not path.exists():
-        console.print(f"[red]Error: Path does not exist: {path}[/]")
-        sys.exit(1)
-    
-    scanner.keep_duplicates = Confirm.ask("Keep duplicate images?", default=False)
-    scanner.extract_images = Confirm.ask("Extract illustrations?", default=False)
-    
-    if PDF_SUPPORT:
-        scanner.generate_pdf = Confirm.ask("Generate PDF catalog of illustrations?", default=False)
-        if scanner.generate_pdf:
-            scanner.pdf_style = Prompt.ask(
-                "PDF style",
-                choices=["detailed", "simple"],
-                default="detailed"
-            )
-            console.print(f"[dim]Using {scanner.pdf_style} PDF style (2 per page vs 1 per page)[/]")
-    else:
-        console.print("[yellow]PDF generation not available (install reportlab)[/]")
-        scanner.generate_pdf = False
-    
-    if scanner.extract_images or scanner.generate_pdf:
-        scanner.output_dir = Path(Prompt.ask("Output directory", default=str(DEFAULT_OUTPUT_DIR)))
-    
-    epub_files = []
-    if path.is_file() and path.suffix.lower() == '.epub':
-        epub_files = [path]
-    elif path.is_dir():
-        epub_files = sorted(path.rglob('*.epub'))
-    
-    if not epub_files:
-        console.print("[red]No EPUB files found.[/]")
-        sys.exit(1)
-    
-    start_time = time.time()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console
-    ) as progress:
-        task = progress.add_task("Scanning EPUBs...", total=len(epub_files))
-        
-        def update_status(message):
-            progress.update(task, description=message[:50])
-        
-        for epub_file in epub_files:
-            result = scanner.process_epub(epub_file, progress_callback=update_status)
-            if result:
-                scanner.scanned_books.append(result)
-                
-                output_dir = scanner.output_dir / "data"
-                scanner.export_json(result, output_dir)
-                scanner.export_csv(result, output_dir)
-                scanner.display_results(result)
-            
-            progress.advance(task)
-    
-    scanner.total_time = time.time() - start_time
-    scanner.display_summary()
+    app = ModernEPUBScannerGUI()
+    app.run()
 
 
 if __name__ == "__main__":
