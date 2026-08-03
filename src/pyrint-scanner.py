@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-epub_scanner.py - A production-quality EPUB illustration scanner and analyzer.
-
 This tool scans EPUB files, detects illustrations, maps them to chapters/sections,
 and exports results in JSON/CSV formats with optional image extraction and PDF catalog generation.
 """
